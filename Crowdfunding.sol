@@ -19,11 +19,12 @@ contract Crowdfunding {
     event Invest(address indexed sender, uint256 amount);
 
     enum State {
-        FundingDeployed,
-        FundingSetUp,
-        FundingStarted,
-        FundingEnded,
-        TxStarted
+        FundingDeployed,    // 部署完成
+        FundingSetUp        // 配置完成
+        FundingStarted,     // 开始众筹
+        FundingSucceed,     // 众筹成功：提前达到 maxFundingGoalInWei，或者按时达到 minFundingGoalInWei
+        FundingFailed,      // 众筹失败：endsAt前没达到 minFundingGoalInWei
+        TxStarted           // 解除冻结，代币开始交易
     }
     State public state;
 
@@ -38,7 +39,7 @@ contract Crowdfunding {
     address public owner;
 
     uint public endTime;
-    uint public totalReceived;
+    uint public weiRaised;
     uint public finalPrice;
     mapping (address => uint) public weiAmountOf;
 
@@ -69,31 +70,31 @@ contract Crowdfunding {
     modifier stateTransition() {
         if (state == State.FundingStarted && calcTokenPrice() <= calcStopPrice())
             finalizeFunding();
-        if (state == State.FundingEnded && now > endTime + freezingPeriod)
+        if (state == State.FundingSucceed && now > endTime + freezingPeriod)
             state = State.TxStarted;
         _;
     }
 
-    function Crowdfunding(address _wallet, uint _ceiling, uint _priceFactor)
+    function Crowdfunding(address _wallet, uint _maxFundingGoalInWei, uint _priceFactor)
         public
     {
-        if (_wallet == 0 || _ceiling == 0 || _priceFactor == 0)
+        if (_wallet == 0 || _maxFundingGoalInWei == 0 || _priceFactor == 0)
             throw;
         owner = msg.sender;
         wallet = _wallet;
-        ceiling = _ceiling;
+        maxFundingGoalInWei = _maxFundingGoalInWei;
         priceFactor = _priceFactor;
         state = State.FundingDeployed;
     }
 
-    function setup(address _gnosisToken)
+    function setup(address _token)
         public
         isOwner
         atState(State.FundingDeployed)
     {
-        if (_gnosisToken == 0)
+        if (_token == 0)
             throw;
-        waltonToken = Token(_gnosisToken);
+        waltonToken = Token(_token);
         if (waltonToken.balanceOf(this) != MAX_TOKENS_SOLD)
             throw;
         state = State.FundingSetUp;
@@ -108,12 +109,12 @@ contract Crowdfunding {
         startBlock = block.number;
     }
 
-    function changeSettings(uint _ceiling, uint _priceFactor)
+    function changeSettings(uint _maxFundingGoalInWei, uint _priceFactor)
         public
         isWallet
         atState(State.FundingSetUp)
     {
-        ceiling = _ceiling;
+        maxFundingGoalInWei = _maxFundingGoalInWei;
         priceFactor = _priceFactor;
     }
 
@@ -122,7 +123,7 @@ contract Crowdfunding {
         stateTransition
         returns (uint)
     {
-        if (state == State.FundingEnded || state == State.TxStarted)
+        if (state == State.FundingSucceed || state == State.TxStarted)
             return finalPrice;
         return calcTokenPrice();
     }
@@ -146,10 +147,7 @@ contract Crowdfunding {
         if (investor == 0)
             investor = msg.sender;
         amount = msg.value;
-        uint maxWei = (MAX_TOKENS_SOLD / 10**18) * calcTokenPrice() - totalReceived;
-        uint maxWeiBasedOnTotalReceived = ceiling - totalReceived;
-        if (maxWeiBasedOnTotalReceived < maxWei)
-            maxWei = maxWeiBasedOnTotalReceived;
+        uint maxWei = maxFundingGoalInWei - weiRaised;
         if (amount > maxWei) {
             amount = maxWei;
             if (!investor.send(msg.value - amount))
@@ -158,7 +156,7 @@ contract Crowdfunding {
         if (amount == 0 || !wallet.send(amount))
             throw;
         weiAmountOf[investor] += amount;
-        totalReceived += amount;
+        weiRaised += amount;
         if (maxWei == amount)
             finalizeFunding();
         Invest(investor, amount);
@@ -182,7 +180,7 @@ contract Crowdfunding {
         public
         returns (uint)
     {
-        return totalReceived * 10**18 / MAX_TOKENS_SOLD + 1;
+        return weiRaised * 10**18 / MAX_TOKENS_SOLD + 1;
     }
 
     function calcTokenPrice()
@@ -196,12 +194,12 @@ contract Crowdfunding {
     function finalizeFunding()
         private
     {
-        state = State.FundingEnded;
-        if (totalReceived == ceiling)
+        state = State.FundingSucceed;
+        if (weiRaised == maxFundingGoalInWei)
             finalPrice = calcTokenPrice();
         else
             finalPrice = calcStopPrice();
-        uint soldTokens = totalReceived * 10**18 / finalPrice;
+        uint soldTokens = weiRaised * 10**18 / finalPrice;
         waltonToken.transfer(wallet, MAX_TOKENS_SOLD - soldTokens);
         endTime = now;
     }

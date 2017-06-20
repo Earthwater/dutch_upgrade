@@ -17,34 +17,38 @@ contract Token {
 
 contract CrowdFunding {
 
+    // events
     event Invest(address indexed sender, uint256 amount);
     event Refund(address indexed receiver, uint256 amount);
-
-    uint constant public maxTokensSold = 9000000 * 10**18; // 9M, tokenWei
-    uint constant public freezingDays = 7 days;
-    uint constant public fundingDays = 15 days;
-    uint constant public startsAt = 15 days;
 
     Token public token;
     address public wallet;
     address public owner;
+
+    State public state;
+    enum State {
+        FundingDeployed,    // 
+        FundingSetUp,       // setup token
+        FundingStarted,     // 
+        FundingSucceed,     // 
+        FundingFailed,      // 
+        TxStarted           // freezingDays after FundingSucceed, investor begin claim tokens
+    }
+
+    // settings
+    uint public startsAt;
+    uint public fundingDays = 15 days;
+    uint public freezingDays = 7 days;
+    uint public maxTokensSold = 40000000 * 10**18; // 1亿 * 40%,  单位：tokenWei
     uint public ceilingWei;
     uint public floorWei;
-    uint public endTime;
-    uint public raisedWei;
-    uint public weiRefunded;
-    uint public finalPrice; // ethWei per token, not ethWei per tokenWei
-    mapping (address => uint) public weiAmountOf;
-    State public state;
 
-    enum State {
-        FundingDeployed,
-        FundingSetUp,
-        FundingStarted,
-        FundingSucceed,
-        FundingFailed,
-        TxStarted
-    }
+    // variables
+    uint public finalPrice; // ethWei per token, not ethWei per tokenWei
+    uint public endTime;
+    uint public weiRaised;
+    uint public weiRefunded;
+    mapping (address => uint) public weiAmountOf;
 
     modifier atState(State _state) {
         if (state != _state)
@@ -78,37 +82,67 @@ contract CrowdFunding {
         _;
     }
 
-    function CrowdFunding(address _wallet, uint _ceilingWei, uint _floorWei)
+    function CrowdFunding(
+        address _wallet,
+        uint _startsAt,
+        uint _fundingDays,
+        uint _freezingDays,
+        uint _maxTokensSold,
+        uint _ceilingWei,
+        uint _floorWei
+    )
         public
     {
-        if (_wallet == 0 || _ceilingWei == 0 || _floorWei == 0)
+        if (   _wallet == 0
+            || _startsAt == 0
+            || _fundingDays == 0
+            || _freezingDays == 0
+            || _maxTokensSold == 0
+            || _ceilingWei == 0
+            || _floorWei == 0)
             throw;
         owner = msg.sender;
-        wallet = _wallet;
-        ceilingWei = _ceilingWei;
-        floorWei = _floorWei;
+        wallet        = _wallet;
+        startsAt      = _startsAt;
+        fundingDays   = _fundingDays;
+        freezingDays  = _freezingDays;
+        maxTokensSold = _maxTokensSold;
+        ceilingWei    = _ceilingWei;
+        floorWei      = _floorWei;
         state = State.FundingDeployed;
     }
 
-    function setup(address _gnosisToken)
+    function setup(address _token)
         public
         isOwner
         atState(State.FundingDeployed)
     {
-        if (_gnosisToken == 0)
+        if (_token == 0)
             throw;
-        token = Token(_gnosisToken);
+        token = Token(_token);
         if (token.balanceOf(this) != maxTokensSold)
             throw;
         state = State.FundingSetUp;
     }
 
-    function changeSettings(uint _ceilingWei)
+    function changeSettings(
+        uint _startsAt,
+        uint _fundingDays,
+        uint _freezingDays,
+        uint _maxTokensSold,
+        uint _ceilingWei,
+        uint _floorWei
+    )
         public
         isWallet
         atState(State.FundingSetUp)
     {
-        ceilingWei = _ceilingWei;
+        startsAt      = _startsAt;
+        fundingDays   = _fundingDays;
+        freezingDays  = _freezingDays;
+        maxTokensSold = _maxTokensSold;
+        ceilingWei    = _ceilingWei;
+        floorWei      = _floorWei;
     }
 
     function calcCurrentTokenPrice()
@@ -140,16 +174,17 @@ contract CrowdFunding {
         if (investor == 0)
             investor = msg.sender;
         amount = msg.value;
-        uint maxWei = ceilingWei - raisedWei;
+        uint maxWei = ceilingWei - weiRaised;
         if (amount > maxWei) {
             amount = maxWei;
             if (!investor.send(msg.value - amount))
                 throw;
         }
-        if (amount == 0 || !wallet.send(amount))
+        //if (amount == 0 || !wallet.send(amount))
+        if (amount == 0)
             throw;
         weiAmountOf[investor] += amount;
-        raisedWei += amount;
+        weiRaised += amount;
         if (maxWei == amount)
             finalizeFunding();
         Invest(investor, amount);
@@ -211,13 +246,15 @@ contract CrowdFunding {
         private
     {
         finalPrice = calcTokenPrice();
-        if (raisedWei >= floorWei)
+        if (weiRaised >= floorWei) {
             state = State.FundingSucceed;
+            if(!wallet.send(this.balance))
+                throw;
+        }
         else
             state = State.FundingFailed;
-        uint soldTokens = raisedWei * 10**18 / finalPrice;
+        uint soldTokens = weiRaised * 10**18 / finalPrice;
         token.transfer(wallet, maxTokensSold - soldTokens);
         endTime = now;
     }
 }
-

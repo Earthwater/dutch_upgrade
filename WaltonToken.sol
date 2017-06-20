@@ -1,4 +1,4 @@
-pragma solidity 0.4.10;
+pragma solidity 0.4.11;
 
 contract Token {
     function transfer(address to, uint256 value) returns (bool success);
@@ -88,8 +88,8 @@ contract WaltonToken is StandardToken {
     {
         if (crowdsale == 0)
             throw;
-        totalSupply = 10000000 * 10**18;
-        balances[crowdsale] = 9000000 * 10**18;
+        totalSupply = 100000000 * 10**18;
+        balances[crowdsale] = 40000000 * 10**18;
         Transfer(0, crowdsale, balances[crowdsale]);
         uint assignedTokens = balances[crowdsale];
         for (uint i=0; i<owners.length; i++) {

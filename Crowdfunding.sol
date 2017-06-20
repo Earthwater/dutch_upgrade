@@ -20,6 +20,7 @@ contract CrowdFunding {
     // events
     event Invest(address indexed sender, uint256 amount);
     event Refund(address indexed receiver, uint256 amount);
+    event ClaimTokens(address indexed receiver, uint256 tokenWei);
 
     Token public token;
     address public wallet;
@@ -34,6 +35,12 @@ contract CrowdFunding {
         FundingFailed,      // 
         TxStarted           // freezingDays after FundingSucceed, investor begin claim tokens
     }
+
+
+    // 数量单位：
+    // ETH:         Wei
+    // Token:       Token Wei
+    // Token Price: Wei per Token
 
     // settings
     uint public startsAt;
@@ -50,6 +57,7 @@ contract CrowdFunding {
     uint public weiRefunded;
     mapping (address => uint) public weiAmountOf;
 
+    // modifiers
     modifier atState(State _state) {
         if (state != _state)
             throw;
@@ -82,6 +90,7 @@ contract CrowdFunding {
         _;
     }
 
+    // functions
     function CrowdFunding(
         address _wallet,
         uint _startsAt,
@@ -94,7 +103,7 @@ contract CrowdFunding {
         public
     {
         if (   _wallet == 0
-            || _startsAt == 0
+            || _startsAt < now
             || _fundingDays == 0
             || _freezingDays == 0
             || _maxTokensSold == 0
@@ -145,6 +154,8 @@ contract CrowdFunding {
         floorWei      = _floorWei;
     }
 
+    // yangfeng: how to do when in FundingDeployed/FundingSetUp/FundingFailed?
+    // yangfeng: does this function needs payable?
     function calcCurrentTokenPrice()
         public
         stateTransitions
@@ -155,6 +166,7 @@ contract CrowdFunding {
         return calcTokenPrice();
     }
 
+    // yangfeng: do we need to return the state value?
     function updateState()
         public
         stateTransitions
@@ -163,7 +175,9 @@ contract CrowdFunding {
         return state;
     }
 
-    function invest(address investor)
+    // invest ETH
+    // yangfeng: Do we need the return value?
+    function invest()
         public
         payable
         isValidPayload
@@ -171,9 +185,9 @@ contract CrowdFunding {
         atState(State.FundingStarted)
         returns (uint amount)
     {
-        if (investor == 0)
-            investor = msg.sender;
+        address investor = msg.sender;
         amount = msg.value;
+
         uint maxWei = ceilingWei - weiRaised;
         if (amount > maxWei) {
             amount = maxWei;
@@ -190,34 +204,37 @@ contract CrowdFunding {
         Invest(investor, amount);
     }
 
-    function requestTokens(address receiver)
+    // claimTokens freezingDays after endTime
+    function claimTokens()
         public
+        payable
         isValidPayload
         stateTransitions
         atState(State.TxStarted)
     {
-        if (receiver == 0)
-            receiver = msg.sender;
-        uint tokenCount = weiAmountOf[receiver] * 10**18 / finalPrice;
+        address receiver = msg.sender;
+
+        uint tokenWei = weiAmountOf[receiver] * 10**18 / finalPrice;
         weiAmountOf[receiver] = 0;
-        token.transfer(receiver, tokenCount);
+        if (!token.transfer(receiver, tokenWei)) throw;
+        ClaimTokens(receiver, tokenWei);
     }
 
-    function refund(address receiver)
+    function refund()
         public
+        payable
         isValidPayload
         stateTransitions
         atState(State.FundingFailed)
     {
-        if (receiver == 0)
-            receiver = msg.sender;
+        address receiver = msg.sender;
 
         uint weiAmount = weiAmountOf[receiver];
         if (weiAmount == 0) throw;
         weiAmountOf[receiver] = 0;
         weiRefunded += weiAmount;
-        Refund(receiver, weiAmount);
         if (!receiver.send(weiAmount)) throw;
+        Refund(receiver, weiAmount);
 
     }
 
@@ -227,18 +244,18 @@ contract CrowdFunding {
         public
         returns (uint)
     {
-        // 前三天固定售出Token总量28%，之后每天增加1%
+        // 前三天固定售出Token总量不变，之后每天增加1%，最后一天Token 总量40%
         // 当天价格 = ceilingWei / 当天Token总量
         uint period = now - startsAt;
         uint curTotalToken = 0;
-        for (uint i=3; i<fundingDays; i++) {
+        for (uint i=3; i<=fundingDays; i++) {
             if (period < i * 60 * 24) {
-                curTotalToken = 28000000 * 10**18 + i * 1000000 * 10**18; 
+                curTotalToken = maxTokensSold - ((fundingDays - i) * 1000000 * 10**18);
                 break;
             }
         }
         if (curTotalToken == 0)
-            curTotalToken = 40000000 * 10**18;
+            curTotalToken = maxTokensSold;
         return ceilingWei * 10**18 / curTotalToken + 1;
     }
 

@@ -1,5 +1,4 @@
-pragma solidity 0.4.11;
-
+pragma solidity 0.4.10;
 
 contract Token {
     function transfer(address to, uint256 value) returns (bool success);
@@ -15,36 +14,34 @@ contract Token {
 }
 
 
-contract CrowdFunding {
+contract Crowdfunding {
 
     event Invest(address indexed sender, uint256 amount);
-    event Refund(address indexed receiver, uint256 amount);
-
-    uint constant public maxTokensSold = 9000000 * 10**18; // 9M, tokenWei
-    uint constant public freezingDays = 7 days;
-    uint constant public fundingDays = 15 days;
-    uint constant public startsAt = 15 days;
-
-    Token public token;
-    address public wallet;
-    address public owner;
-    uint public ceilingWei;
-    uint public floorWei;
-    uint public endTime;
-    uint public raisedWei;
-    uint public weiRefunded;
-    uint public finalPrice; // ethWei per token, not ethWei per tokenWei
-    mapping (address => uint) public weiAmountOf;
-    State public state;
 
     enum State {
-        FundingDeployed,
-        FundingSetUp,
-        FundingStarted,
-        FundingSucceed,
-        FundingFailed,
-        TxStarted
+        FundingDeployed,    // 部署完成
+        FundingSetUp        // 配置完成
+        FundingStarted,     // 开始众筹
+        FundingSucceed,     // 众筹成功：提前达到 maxFundingGoalInWei，或者按时达到 minFundingGoalInWei
+        FundingFailed,      // 众筹失败：endsAt前没达到 minFundingGoalInWei
+        TxStarted           // 解除冻结，代币开始交易
     }
+    State public state;
+
+    uint constant public maxFundingGoalInWei = 100000 * 10**18;
+    uint constant public minFundingGoalInWei = 7500 * 10**18;
+    uint constant public freezingPeriod = 7 days;
+    uint256 public startsAt;
+    uint256 public endsAt;
+
+    Token public waltonToken;
+    address public wallet;
+    address public owner;
+
+    uint public endTime;
+    uint public weiRaised;
+    uint public finalPrice;
+    mapping (address => uint) public weiAmountOf;
 
     modifier atState(State _state) {
         if (state != _state)
@@ -70,50 +67,60 @@ contract CrowdFunding {
         _;
     }
 
-    modifier stateTransitions() {
-        if (state == State.FundingStarted && now > startsAt + fundingDays)
+    modifier stateTransition() {
+        if (state == State.FundingStarted && calcTokenPrice() <= calcStopPrice())
             finalizeFunding();
-        if (state == State.FundingSucceed && now > endTime + freezingDays)
+        if (state == State.FundingSucceed && now > endTime + freezingPeriod)
             state = State.TxStarted;
         _;
     }
 
-    function CrowdFunding(address _wallet, uint _ceilingWei, uint _floorWei)
+    function Crowdfunding(address _wallet, uint _maxFundingGoalInWei, uint _priceFactor)
         public
     {
-        if (_wallet == 0 || _ceilingWei == 0 || _floorWei == 0)
+        if (_wallet == 0 || _maxFundingGoalInWei == 0 || _priceFactor == 0)
             throw;
         owner = msg.sender;
         wallet = _wallet;
-        ceilingWei = _ceilingWei;
-        floorWei = _floorWei;
+        maxFundingGoalInWei = _maxFundingGoalInWei;
+        priceFactor = _priceFactor;
         state = State.FundingDeployed;
     }
 
-    function setup(address _gnosisToken)
+    function setup(address _token)
         public
         isOwner
         atState(State.FundingDeployed)
     {
-        if (_gnosisToken == 0)
+        if (_token == 0)
             throw;
-        token = Token(_gnosisToken);
-        if (token.balanceOf(this) != maxTokensSold)
+        waltonToken = Token(_token);
+        if (waltonToken.balanceOf(this) != MAX_TOKENS_SOLD)
             throw;
         state = State.FundingSetUp;
     }
 
-    function changeSettings(uint _ceilingWei)
+    function startFunding()
         public
         isWallet
         atState(State.FundingSetUp)
     {
-        ceilingWei = _ceilingWei;
+        state = State.FundingStarted;
+        startBlock = block.number;
+    }
+
+    function changeSettings(uint _maxFundingGoalInWei, uint _priceFactor)
+        public
+        isWallet
+        atState(State.FundingSetUp)
+    {
+        maxFundingGoalInWei = _maxFundingGoalInWei;
+        priceFactor = _priceFactor;
     }
 
     function calcCurrentTokenPrice()
         public
-        stateTransitions
+        stateTransition
         returns (uint)
     {
         if (state == State.FundingSucceed || state == State.TxStarted)
@@ -123,7 +130,7 @@ contract CrowdFunding {
 
     function updateState()
         public
-        stateTransitions
+        stateTransition
         returns (State)
     {
         return state;
@@ -133,14 +140,14 @@ contract CrowdFunding {
         public
         payable
         isValidPayload
-        stateTransitions
+        stateTransition
         atState(State.FundingStarted)
         returns (uint amount)
     {
         if (investor == 0)
             investor = msg.sender;
         amount = msg.value;
-        uint maxWei = ceilingWei - raisedWei;
+        uint maxWei = maxFundingGoalInWei - weiRaised;
         if (amount > maxWei) {
             amount = maxWei;
             if (!investor.send(msg.value - amount))
@@ -149,75 +156,51 @@ contract CrowdFunding {
         if (amount == 0 || !wallet.send(amount))
             throw;
         weiAmountOf[investor] += amount;
-        raisedWei += amount;
+        weiRaised += amount;
         if (maxWei == amount)
             finalizeFunding();
         Invest(investor, amount);
     }
 
-    function requestTokens(address receiver)
+    function claimTokens(address receiver)
         public
         isValidPayload
-        stateTransitions
+        stateTransition
         atState(State.TxStarted)
     {
         if (receiver == 0)
             receiver = msg.sender;
         uint tokenCount = weiAmountOf[receiver] * 10**18 / finalPrice;
         weiAmountOf[receiver] = 0;
-        token.transfer(receiver, tokenCount);
+        waltonToken.transfer(receiver, tokenCount);
     }
 
-    function refund(address receiver)
+    function calcStopPrice()
+        constant
         public
-        isValidPayload
-        stateTransitions
-        atState(State.FundingFailed)
+        returns (uint)
     {
-        if (receiver == 0)
-            receiver = msg.sender;
-
-        uint weiAmount = weiAmountOf[receiver];
-        if (weiAmount == 0) throw;
-        weiAmountOf[receiver] = 0;
-        weiRefunded += weiAmount;
-        Refund(receiver, weiAmount);
-        if (!receiver.send(weiAmount)) throw;
-
+        return weiRaised * 10**18 / MAX_TOKENS_SOLD + 1;
     }
 
-    // 价格单位：ethWei per token, not ethWei per tokenWei
     function calcTokenPrice()
         constant
         public
         returns (uint)
     {
-        // 前三天固定售出Token总量28%，之后每天增加1%
-        // 当天价格 = ceilingWei / 当天Token总量
-        uint period = now - startsAt;
-        uint curTotalToken = 0;
-        for (uint i=3; i<fundingDays; i++) {
-            if (period < i * 60 * 24) {
-                curTotalToken = 28000000 * 10**18 + i * 1000000 * 10**18; 
-                break;
-            }
-        }
-        if (curTotalToken == 0)
-            curTotalToken = 40000000 * 10**18;
-        return ceilingWei * 10**18 / curTotalToken + 1;
+        return priceFactor * 10**18 / (block.number - startBlock + 7500) + 1;
     }
 
     function finalizeFunding()
         private
     {
-        finalPrice = calcTokenPrice();
-        if (raisedWei >= floorWei)
-            state = State.FundingSucceed;
+        state = State.FundingSucceed;
+        if (weiRaised == maxFundingGoalInWei)
+            finalPrice = calcTokenPrice();
         else
-            state = State.FundingFailed;
-        uint soldTokens = raisedWei * 10**18 / finalPrice;
-        token.transfer(wallet, maxTokensSold - soldTokens);
+            finalPrice = calcStopPrice();
+        uint soldTokens = weiRaised * 10**18 / finalPrice;
+        waltonToken.transfer(wallet, MAX_TOKENS_SOLD - soldTokens);
         endTime = now;
     }
 }
-

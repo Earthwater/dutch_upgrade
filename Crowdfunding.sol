@@ -26,7 +26,7 @@ contract CrowdFunding {
     address public wallet;
     address public owner;
 
-    State public state;
+
     enum State {
         FundingDeployed,    // 
         FundingSetUp,       // setup token
@@ -35,6 +35,7 @@ contract CrowdFunding {
         FundingFailed,      // 
         TxStarted           // freezingDays after FundingSucceed, investor begin claim tokens
     }
+    State public state;
 
 
     // 数量单位：

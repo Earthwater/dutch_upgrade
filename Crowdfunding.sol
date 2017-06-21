@@ -25,8 +25,7 @@ contract CrowdFunding {
     Token public token;
     address public wallet;
     address public owner;
-
-    State public state;
+    
     enum State {
         FundingDeployed,    // 
         FundingSetUp,       // setup token
@@ -36,6 +35,7 @@ contract CrowdFunding {
         TxStarted           // freezingDays after FundingSucceed, investor begin claim tokens
     }
 
+    State public state;     // mark the state of funding
 
     // 数量单位：
     // ETH:         Wei

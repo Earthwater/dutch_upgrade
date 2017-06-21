@@ -26,7 +26,7 @@ contract CrowdFunding {
     address public wallet;
     address public owner;
 
-
+    State public state;
     enum State {
         FundingDeployed,    // 
         FundingSetUp,       // setup token
@@ -35,7 +35,6 @@ contract CrowdFunding {
         FundingFailed,      // 
         TxStarted           // freezingDays after FundingSucceed, investor begin claim tokens
     }
-    State public state;
 
 
     // 数量单位：
@@ -156,7 +155,11 @@ contract CrowdFunding {
     }
 
     // yangfeng: how to do when in FundingDeployed/FundingSetUp/FundingFailed?
+    // lishuai : FundingDeployed:some initial value should be set in construct func and the contract should be deployed
+    // lishuai : FundingSetUP:Decide releated paramters to setup the process of crowdfunding
+    // lishuai : FundingFailed: close the invest func, and return back all ethWei (related func should be invoked by investors),and then refunding
     // yangfeng: does this function needs payable?
+    // lishuai : towards any func ,if you need it be able to receive ether,then you should add "payable",otherwise, you should not.
     function calcCurrentTokenPrice()
         public
         stateTransitions
@@ -168,6 +171,8 @@ contract CrowdFunding {
     }
 
     // yangfeng: do we need to return the state value?
+    // lishuai : both are acceptable,if you don't return ,you can just get access to variable-state,to know the status of funding.
+    // lishuai : this func should be named as getState
     function updateState()
         public
         stateTransitions
@@ -178,6 +183,7 @@ contract CrowdFunding {
 
     // invest ETH
     // yangfeng: Do we need the return value?
+    // lishuai : we don'y need any return
     function invest()
         public
         payable
@@ -200,7 +206,7 @@ contract CrowdFunding {
             throw;
         weiAmountOf[investor] += amount;
         weiRaised += amount;
-        if (maxWei == amount)
+        if (maxWei == amount) 
             finalizeFunding();
         Invest(investor, amount);
     }
@@ -276,4 +282,3 @@ contract CrowdFunding {
         endTime = now;
     }
 }
-
